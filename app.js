@@ -1,25 +1,120 @@
 class PrintingPressManager {
     constructor() {
-        this.transactions = this.loadData();
-        this.updateDisplay();
+        this.transactions = [];
+        this.githubToken = '';
+        this.repoOwner = 'laudabbeyjesse-arch';
+        this.repoName = 'jpo-printing';
+        this.dataFile = 'data/transactions.json';
+        this.loadGitHubToken();
+        this.loadData();
+        this.startAutoRefresh();
     }
 
-    loadData() {
-        const saved = localStorage.getItem('jpoTransactions');
-        return saved ? JSON.parse(saved) : [];
+    loadGitHubToken() {
+        const urlParams = new URLSearchParams(window.location.search);
+        this.githubToken = urlParams.get('token') || '';
+        
+        if (this.githubToken) {
+            this.updateSyncStatus('✅ Connected to GitHub');
+        } else {
+            this.updateSyncStatus('⚠️ Add ?token=YOUR_TOKEN to URL');
+        }
     }
 
-    saveData() {
-        localStorage.setItem('jpoTransactions', JSON.stringify(this.transactions));
+    async loadData() {
+        if (!this.githubToken) return;
+
+        try {
+            const response = await fetch(
+                `https://api.github.com/repos/${this.repoOwner}/${this.repoName}/contents/${this.dataFile}`,
+                {
+                    headers: {
+                        'Authorization': `token ${this.githubToken}`,
+                        'Accept': 'application/vnd.github.v3+json'
+                    }
+                }
+            );
+
+            if (response.ok) {
+                const data = await response.json();
+                const content = JSON.parse(atob(data.content));
+                this.transactions = content;
+                this.updateDisplay();
+                this.updateSyncStatus('✅ Data loaded from GitHub');
+            }
+        } catch (error) {
+            this.updateSyncStatus('❌ Error loading data');
+        }
+    }
+
+    async saveData() {
+        if (!this.githubToken) {
+            alert('⚠️ Add ?token=YOUR_TOKEN to URL first');
+            return false;
+        }
+
+        try {
+            const getResponse = await fetch(
+                `https://api.github.com/repos/${this.repoOwner}/${this.repoName}/contents/${this.dataFile}`,
+                {
+                    headers: {
+                        'Authorization': `token ${this.githubToken}`,
+                        'Accept': 'application/vnd.github.v3+json'
+                    }
+                }
+            );
+
+            let sha = '';
+            if (getResponse.ok) {
+                const fileData = await getResponse.json();
+                sha = fileData.sha;
+            }
+
+            const content = btoa(JSON.stringify(this.transactions, null, 2));
+            const response = await fetch(
+                `https://api.github.com/repos/${this.repoOwner}/${this.repoName}/contents/${this.dataFile}`,
+                {
+                    method: 'PUT',
+                    headers: {
+                        'Authorization': `token ${this.githubToken}`,
+                        'Accept': 'application/vnd.github.v3+json',
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        message: `Update: ${new Date().toLocaleString()}`,
+                        content: content,
+                        sha: sha
+                    })
+                }
+            );
+
+            if (response.ok) {
+                this.updateSyncStatus('✅ Saved to GitHub');
+                return true;
+            }
+        } catch (error) {
+            this.updateSyncStatus('❌ Save failed');
+        }
+        return false;
+    }
+
+    updateSyncStatus(message) {
+        document.getElementById('syncStatus').textContent = message;
+    }
+
+    startAutoRefresh() {
+        setInterval(() => {
+            this.loadData();
+        }, 10000); // Refresh every 10 seconds
     }
 
     getCurrentDateTime() {
         return new Date().toLocaleString('en-GH');
     }
 
-    addTransaction(type, description, amount, details = '') {
+    async addTransaction(type, description, amount, details = '') {
         const transaction = {
-            id: Date.now(),
+            id: Date.now().toString(),
             datetime: this.getCurrentDateTime(),
             type: type,
             description: description,
@@ -28,33 +123,27 @@ class PrintingPressManager {
         };
         
         this.transactions.push(transaction);
-        this.saveData();
-        this.updateDisplay();
-        
-        // Show success message
-        alert(`✅ ${type === 'sale' ? 'Sale' : 'Expense'} added successfully!`);
+        const saved = await this.saveData();
+        if (saved) {
+            this.updateDisplay();
+            alert(`✅ ${type} added!`);
+        }
     }
 
-    deleteTransaction(id) {
-        if (confirm('Are you sure you want to delete this transaction?')) {
+    async deleteTransaction(id) {
+        if (confirm('Delete this transaction?')) {
             this.transactions = this.transactions.filter(t => t.id !== id);
-            this.saveData();
+            await this.saveData();
             this.updateDisplay();
         }
     }
 
     calculateTotals() {
-        let totalSales = 0;
-        let totalExpenses = 0;
-        
-        this.transactions.forEach(transaction => {
-            if (transaction.type === 'sale') {
-                totalSales += transaction.amount;
-            } else {
-                totalExpenses += transaction.amount;
-            }
+        let totalSales = 0, totalExpenses = 0;
+        this.transactions.forEach(t => {
+            if (t.type === 'sale') totalSales += t.amount;
+            else totalExpenses += t.amount;
         });
-        
         return {
             sales: totalSales,
             expenses: totalExpenses,
@@ -65,28 +154,25 @@ class PrintingPressManager {
     updateDisplay() {
         const totals = this.calculateTotals();
         
-        // Update summary cards
         document.getElementById('totalProfit').textContent = `GH₵${totals.profit.toFixed(2)}`;
         document.getElementById('totalSales').textContent = `GH₵${totals.sales.toFixed(2)}`;
         document.getElementById('totalExpenses').textContent = `GH₵${totals.expenses.toFixed(2)}`;
         
-        // Update transactions table
         const tbody = document.getElementById('transactionsBody');
         tbody.innerHTML = '';
         
         if (this.transactions.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 20px; color: #666;">No transactions yet. Add your first transaction above!</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 20px; color: #666;">No transactions yet</td></tr>';
             return;
         }
         
-        // Show transactions in reverse order (newest first)
         this.transactions.slice().reverse().forEach(transaction => {
             const row = document.createElement('tr');
             row.innerHTML = `
                 <td>${transaction.datetime}</td>
                 <td>
                     <span style="padding: 4px 8px; border-radius: 12px; font-size: 0.8em; color: white; background: ${transaction.type === 'sale' ? '#27ae60' : '#e74c3c'}">
-                        ${transaction.type === 'sale' ? '💰 SALE' : '💸 EXPENSE'}
+                        ${transaction.type === 'sale' ? 'SALE' : 'EXPENSE'}
                     </span>
                 </td>
                 <td>${transaction.description}</td>
@@ -95,7 +181,7 @@ class PrintingPressManager {
                 </td>
                 <td>${transaction.details || '-'}</td>
                 <td>
-                    <button onclick="manager.deleteTransaction(${transaction.id})" style="background: #e74c3c; padding: 5px 10px; font-size: 12px; border: none; color: white; border-radius: 3px; cursor: pointer;">Delete</button>
+                    <button onclick="manager.deleteTransaction('${transaction.id}')" style="background: #e74c3c; padding: 5px 10px; font-size: 12px; border: none; color: white; border-radius: 3px; cursor: pointer;">Delete</button>
                 </td>
             `;
             tbody.appendChild(row);
@@ -103,10 +189,8 @@ class PrintingPressManager {
     }
 }
 
-// Initialize the manager
 const manager = new PrintingPressManager();
 
-// Handle form submission
 document.getElementById('transactionForm').addEventListener('submit', function(e) {
     e.preventDefault();
     
@@ -117,18 +201,5 @@ document.getElementById('transactionForm').addEventListener('submit', function(e
     const details = formData.get('details');
     
     manager.addTransaction(type, description, amount, details);
-    
-    // Reset form
     this.reset();
 });
-
-// Add some sample data if empty
-if (manager.transactions.length === 0) {
-    // Add sample transactions after a short delay
-    setTimeout(() => {
-        manager.addTransaction('sale', 'Business Cards - ABC Company', 2500.00, '500 pieces, glossy finish');
-        manager.addTransaction('sale', 'Vinyl Banner - XYZ Store', 4500.00, 'Large 10x5 feet banner');
-        manager.addTransaction('expense', 'A4 Glossy Paper', 1200.00, '20 reams for stock');
-        manager.addTransaction('expense', 'Ink Cartridges', 1800.00, 'CMYK full set');
-    }, 1000);
-}
